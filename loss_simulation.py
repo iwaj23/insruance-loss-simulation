@@ -1,0 +1,101 @@
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from scipy.stats import poisson, lognorm, gamma
+
+
+#____________________________
+#1) Assumptions
+#____________________________
+# Remove seed for random unreproducible results
+SEED = 42
+NUM_SIMS = 50_000
+LAMBDA_CLAIMS = 20
+
+TARGET_MEAN_SEVERITY = 5000   #average claim size in dollars
+SIGMA = 0.8                   #lognormal shape parameter (controls tail heaviness)
+
+#If X ~ Lognormal(mu,sigma), then E[X] = exp(mu + 0.5*sigma^2)
+MU = np.log(TARGET_MEAN_SEVERITY) - 0.5 * SIGMA**2
+#Compare to Gamma severity with the same mean and approx same CV as Lognormal(SIGMA)
+cv2 = np.exp(SIGMA**2) - 1
+gamma_shape = 1/ cv2                             #K
+gamma_scale = TARGET_MEAN_SEVERITY / gamma_shape #theta
+
+print("- Model Assumptions -")
+print(f"Claim Frequency: Poisson (lambda = {LAMBDA_CLAIMS})")
+print(f"Claim Severity: Lognormal (mean={TARGET_MEAN_SEVERITY:,.0f}, sigma = {SIGMA})")
+print(f"Simulations:    {NUM_SIMS:,}\n")
+
+#____________________________
+# 2) Simulation
+#____________________________
+
+rng = np.random.default_rng(SEED)
+# Replace the above line with the one below for no seed. (Every run of the program will produce different results)
+# rng = np.random.default_rng()
+
+# SIMULATION FUNCTION
+
+def simulate_aggregate_losses(severity_dist:str) -> pd.Series:
+    claim_counts = poisson(mu=LAMBDA_CLAIMS).rvs(size=NUM_SIMS,random_state=rng)
+    total_losses = np.empty(NUM_SIMS,dtype=float)
+    for j,n in enumerate(claim_counts):
+        if n == 0:
+            total_losses[j] = 0.0
+            continue
+        if severity_dist =="lognormal":
+            severities = lognorm(s=SIGMA, scale =np.exp(MU)).rvs(size=n, random_state=rng)
+        elif severity_dist == "gamma":
+            severities = gamma(a=gamma_shape, scale=gamma_scale).rvs(size=n, random_state=rng)
+        else:
+            raise ValueError("Severity_dist must be 'lognormal' or 'gamma'")
+        total_losses[j] = severities.sum()
+    return pd.Series(total_losses, name = f"total_loss_{severity_dist}")
+
+loss_logn = simulate_aggregate_losses("lognormal")
+loss_gamm = simulate_aggregate_losses("gamma")
+
+def summarize(losses: pd.Series) -> dict:
+    return {
+        "mean": losses.mean(),
+        "std":losses.std(),
+        "p90": losses.quantile(0.90),
+        "p95": losses.quantile(0.95),
+        "p99": losses.quantile(0.99),
+    }
+
+summary_df = pd.DataFrame(
+    {"Lognormal": summarize(loss_logn), "Gamma": summarize(loss_gamm)}
+).T
+print("- Aggregate Loss Summary (Compare Severity Distributiuons) -")
+# print(summary_df.applymap(lambda x: f"{x:,.0f}"))
+# print(summary_df.applymap(lambda x: f"{x:,.0f}"))
+print(summary_df.round(0).astype(int))
+
+
+#____________________________
+#3) Plot
+#____________________________
+
+plt.figure()
+plt.hist(loss_logn, bins=60, alpha = 0.6, label = "Lognormal severity")
+plt.hist(loss_gamm, bins=60,alpha=0.6,label="Gamma severity")
+
+plt.title("Aggregate Loss Distribution Comparison")
+plt.xlabel("Total Loss")
+plt.ylabel("Frequency")
+plt.legend()
+
+
+plt.figure()
+sorted_losses = np.sort(loss_logn)
+exceedance_prob = 1 -np.arange(1, len(sorted_losses) +1) / len(sorted_losses)
+
+plt.plot(sorted_losses, exceedance_prob)
+plt.title("Loss Exceedance Curve (Lognormal Severity)")
+plt.xlabel("Loss Level")
+plt.ylabel("Probability Loss Exceeds Level")
+plt.yscale("log")
+
+plt.show()
